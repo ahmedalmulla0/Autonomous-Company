@@ -19,6 +19,7 @@ import sys
 import tempfile
 
 from project_isolation import IsolationError, checked_tree, run_isolated, runtime_binary
+from isolation_proxy import MODEL_BRIDGE_PORT, MODEL_PATH, loopback_upstream
 from product_identity import empty_state, read_state, transaction, validate_state, safe_path, transaction_signals, transaction_signal_mask
 
 HERE = Path(__file__).resolve().parent
@@ -502,6 +503,16 @@ class CompanyView:
         self.collected = True
 
 
+def local_model_broker(endpoint):
+    """Route a loopback OpenAI-compatible endpoint through the host model broker."""
+    try:
+        loopback_upstream(endpoint)
+    except ValueError:
+        return None
+    timeout = float(os.environ.get("OPENAI_COMPATIBLE_REQUEST_TIMEOUT_SECONDS", "120")) + 30
+    return {"endpoint": endpoint, "api_key": os.environ.get("OPENAI_COMPATIBLE_API_KEY", ""), "timeout": timeout}
+
+
 def run_engine(root, project, engine, binary, prompt, model="", effort="", interactive=False, language=None):
     runtime_binary()  # Refuse before making a view when the boundary is absent.
     if engine not in ("codex", "claude", "cursor", "openai-compatible"):
@@ -524,6 +535,7 @@ def run_engine(root, project, engine, binary, prompt, model="", effort="", inter
         if language is not None:
             env["AUTONOMOUS_COMPANY_LANGUAGE"] = language
         native = binary
+        model_broker = None
         if engine == "codex":
             command = ["/opt/engine/agent"]
             if not interactive:
@@ -557,13 +569,21 @@ def run_engine(root, project, engine, binary, prompt, model="", effort="", inter
         else:
             native = None
             (view.workspace / "prompt.txt").write_text(prompt)
-            command = ["/usr/bin/python3", "/workspace/scripts/core/openai-compatible-agent.py", "--endpoint", os.environ["OPENAI_COMPATIBLE_ENDPOINT"],
+            endpoint = os.environ["OPENAI_COMPATIBLE_ENDPOINT"]
+            model_broker = local_model_broker(endpoint)
+            if model_broker:
+                endpoint = f"http://127.0.0.1:{MODEL_BRIDGE_PORT}{MODEL_PATH}"
+            command = ["/usr/bin/python3", "/workspace/scripts/core/openai-compatible-agent.py", "--endpoint", endpoint,
                        "--model", model, "--workspace", "/workspace", "--prompt-file", "/workspace/prompt.txt",
                        "--request-timeout", os.environ.get("OPENAI_COMPATIBLE_REQUEST_TIMEOUT_SECONDS", "120"),
                        "--max-turns", os.environ.get("OPENAI_COMPATIBLE_MAX_TURNS", "12")]
             for key, value in os.environ.items():
                 if key.startswith("OPENAI_COMPATIBLE_"):
                     env[key] = value
+            if model_broker:
+                # The broker injects the key on the host; it never enters the namespace.
+                env.pop("OPENAI_COMPATIBLE_API_KEY", None)
+                env["OPENAI_COMPATIBLE_ENDPOINT"] = endpoint
         readonly = [(view.workspace / name, "/workspace/" + name) for name in ("scripts", ".claude", "i18n", "Makefile", ".autonomous-company.local") if (view.workspace / name).exists()]
         dependencies = Path(root) / "scripts/media/node_modules"
         if dependencies.is_dir():
@@ -576,7 +596,7 @@ def run_engine(root, project, engine, binary, prompt, model="", effort="", inter
                     readonly.append((child, "/opt/browsers/" + child.name))
             env["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/browsers"
         code = run_isolated(command, view.workspace, home=view.home, engine=native, environment=env,
-                            readonly=readonly, interactive=interactive)
+                            readonly=readonly, interactive=interactive, model_broker=model_broker)
         last_message = view.workspace / "logs/last-message.txt"
         if engine == "codex" and last_message.exists():
             message = regular_bytes(last_message).decode("utf-8", errors="replace")

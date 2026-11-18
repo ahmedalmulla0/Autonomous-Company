@@ -2,7 +2,7 @@
 
 - **Subject:** [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi) (MIT, reviewed at `7f3fece`, 2026-11-08)
 - **Question:** Can it lower model costs for the company loop, and can products use it?
-- **Status:** Evaluated. Not wired in. The isolation boundary blocks the default setup (see Blocker).
+- **Status:** Evaluated. The isolation blocker is resolved by the host-side model broker (see Blocker). Ready for the A/B trial.
 
 ## What it is
 
@@ -28,7 +28,11 @@ make start
 
 The adapter's checks pass with this setup. The endpoint has no query string and no embedded credentials, and the key is read from the environment only.
 
-## Blocker: isolation rejects local routers
+## Blocker: isolation rejects local routers (resolved)
+
+**Resolved (2026-11-18):** option 1 is implemented. A loopback `OPENAI_COMPATIBLE_ENDPOINT` such as `http://127.0.0.1:3001/v1/chat/completions` now goes through a per-invocation host-side broker (`ModelBroker` in `scripts/core/isolation_proxy.py`). It allows only `POST /v1/chat/completions` to that fixed upstream and injects the key on the host. See [host-side model broker](project-isolation.md#host-side-model-broker). Tests: `tests/test_model_broker.py`.
+
+Original analysis:
 
 FreeLLMAPI is meant to run locally (`http://localhost:3001`). Every model cycle runs inside the project isolation namespace. Its egress proxy **rejects loopback, private and link-local addresses** ([project isolation](project-isolation.md): "host-local/private model servers need a separately designed broker and are currently unavailable"). A local FreeLLMAPI therefore cannot be reached from a cycle, even though `engine-adapters.sh` accepts the loopback URL.
 
@@ -51,5 +55,5 @@ Options, ranked:
 ## Decision
 
 - **Products:** No. Never use FreeLLMAPI as the inference backend of anything we sell.
-- **Internal loop:** Possibly, for low-stakes cycles such as research, drafting and docs. Do not use it for code that ships or for decisions that cost money. It requires option 1 (the broker). Until the broker exists, Claude remains the default engine.
-- **Next action:** `cto-vogels` and `devops-hightower` design the host-side model broker (allowlisted path, fixed upstream, host-injected key, request logging). Then run a 1-day A/B test: 10 research cycles on `auto:smart` against the default engine, comparing cycle success rate and output quality.
+- **Internal loop:** Possibly, for low-stakes cycles such as research, drafting and docs. Do not use it for code that ships or for decisions that cost money. It requires option 1 (the broker), which now exists. Claude remains the default engine until the A/B test below passes.
+- **Next action:** The broker is done (allowlisted path, fixed upstream, host-injected key). Request logging is a hook only (`log` callback), not yet wired to cycle logs. Run a 1-day A/B test: 10 research cycles on `auto:smart` against the default engine, comparing cycle success rate and output quality.

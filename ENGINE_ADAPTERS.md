@@ -8,7 +8,7 @@ Run the commands below from the repository root.
 
 Claude remains the default. Cursor and OpenAI-compatible support are opt-in so an existing installation does not change behavior after an upgrade.
 
-**Execution now requires project isolation.** Every model cycle and interactive team enters the same Linux/WSL2 namespace boundary; product checks and screenshot subprocesses also use it. Missing bubblewrap/libseccomp/kernel capabilities fail closed. Native Windows/macOS and unverified Cursor packaging are refused. See [setup, visible inputs, network policy and recovery](docs/project-isolation.md). The engine-specific options below are additional policies inside this boundary, not substitutes for it. Host-local/private endpoints remain inaccessible even when an adapter transport setting allows HTTP.
+**Execution now requires project isolation.** Every model cycle and interactive team enters the same Linux/WSL2 namespace boundary; product checks and screenshot subprocesses also use it. Missing bubblewrap/libseccomp/kernel capabilities fail closed. Native Windows/macOS and unverified Cursor packaging are refused. See [setup, visible inputs, network policy and recovery](docs/project-isolation.md). The engine-specific options below are additional policies inside this boundary, not substitutes for it. Private-network endpoints remain inaccessible even when an adapter transport setting allows HTTP. A loopback `openai-compatible` endpoint (a local router such as FreeLLMAPI, Ollama, vLLM or LM Studio) is reached only through the host-side model broker described in [project isolation](docs/project-isolation.md#host-side-model-broker).
 
 ## Selection and safety
 

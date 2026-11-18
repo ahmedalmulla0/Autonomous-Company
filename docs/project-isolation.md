@@ -15,7 +15,7 @@ ENGINE=codex MODEL=gpt-6.1-sol CODEX_REASONING_EFFORT=high make start
 
 Ubuntu's AppArmor policy can prevent bubblewrap from configuring its isolated loopback (`RTM_NEWADDR: Operation not permitted`). An operator must enable the distribution's bubblewrap-specific user-namespace profile, checking existing profiles first to avoid conflicting attachments. Runtime startup leaves host policy unchanged and refuses execution until the preflight succeeds. The hosted CI setup loads Ubuntu's packaged profile on its disposable runner; it does not disable AppArmor or its system-wide restrictions. See [Ubuntu's user-namespace policy](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces).
 
-Codex native binaries and the official Linux npm package are supported. The npm launcher is resolved as package data; only its native binary and code-mode helper enter the sandbox. Claude currently requires a native Linux binary and either its single credentials record or an explicit API-key environment variable. Cursor packaging/authentication has not been verified and is refused. OpenAI-compatible runs through the company adapter; its standalone script refuses host execution. Public endpoints are supported; host-local/private model servers need a separately designed broker and are currently unavailable.
+Codex native binaries and the official Linux npm package are supported. The npm launcher is resolved as package data; only its native binary and code-mode helper enter the sandbox. Claude currently requires a native Linux binary and either its single credentials record or an explicit API-key environment variable. Cursor packaging/authentication has not been verified and is refused. OpenAI-compatible runs through the company adapter; its standalone script refuses host execution. Public endpoints are supported. A loopback endpoint (for example a local FreeLLMAPI router on `http://127.0.0.1:3001/v1/chat/completions`) is supported through the host-side model broker below; other private-network model servers remain unavailable.
 
 Model and reasoning selections are preserved. The engine must actually support the requested model; isolation never substitutes a different model. Global provider configuration, plugins, MCP servers, session history and desktop browser connections are not imported. Codex receives only its authentication record and a fresh configuration/session directory; Claude receives only its authentication record. These scoped credentials remain readable by the model, so this is a host/project boundary, not a credential vault.
 
@@ -32,6 +32,18 @@ The operator's selected native Linux Node executable is mounted individually at 
 Chromium also needs its normal Linux shared libraries. Install them through the distribution, or set `AUTONOMOUS_COMPANY_LIBRARY_RUNTIME` to a reviewed directory containing only the necessary `.so` files. That narrow directory is mounted read-only and replaces inherited library-search settings; an arbitrary host `LD_LIBRARY_PATH` is not imported.
 
 The isolated network has its own loopback, so local application servers and browser tests work together. An invocation-specific HTTP proxy permits public HTTP/HTTPS destinations on ports 80/443. It resolves and validates all addresses, pins the destination IP, and rejects private, loopback, link-local and special-use addresses. Direct network access, host-local services, Unix host sockets, VSOCK and packet sockets are unavailable. Existing public HTTP upstream proxies may transport the pinned connection. Applications needing internet access must honor HTTP(S) proxy settings; raw outbound TCP/UDP is unavailable.
+
+### Host-side model broker
+
+When the `openai-compatible` engine is configured with a loopback endpoint, the host starts a model broker for that one invocation. Its rules:
+
+- **Fixed upstream.** The host chooses the upstream from `OPENAI_COMPATIBLE_ENDPOINT`. It must be plain `http://` on a loopback address with no credentials, query or fragment. The namespace cannot choose another host, port or path.
+- **One route.** Inside the namespace the agent talks to `http://127.0.0.1:18081/v1/chat/completions`, which a bridge relays to a read-only Unix socket. The broker accepts only `POST /v1/chat/completions` with a `Content-Length` JSON object body of at most 8 MiB. Other methods, paths, `CONNECT`, chunked bodies and non-object JSON get `403`. Dashboards and admin APIs on the router are therefore unreachable.
+- **Host-held key.** `OPENAI_COMPATIBLE_API_KEY` is removed from the namespace environment. The broker adds `Authorization: Bearer …` on the host side. Client headers (including any `Authorization` or `Cookie`) are never forwarded.
+- **Failure.** If the router is down, the agent gets `502`. The broker stops when the invocation ends.
+
+The public egress proxy is unchanged: it still rejects loopback, private and link-local destinations.
+
 
 Product Git status and the clean-worktree check before an explicitly requested publication run in a disposable isolated copy. This includes product-local clean/process filters selected by `.gitattributes`; global Git configuration is absent and filter effects never return to the original. Filter diagnostics remain visible, and a nonzero Git exit refuses inspection. Product-local Git configuration belongs to that inspection's input. The ordinary model view continues to receive sanitized Git configuration.
 

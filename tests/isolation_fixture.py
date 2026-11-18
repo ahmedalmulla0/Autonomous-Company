@@ -66,12 +66,31 @@ class FixtureView:
     def collect(self):
         self.collected = True
 
-def fixture_execute(command, workspace, *, environment=None, engine=None, home=None, **kwargs):
+def fixture_execute(command, workspace, *, environment=None, engine=None, home=None, model_broker=None, **kwargs):
     def mapped(value):
         return str(value).replace('/workspace', str(workspace)).replace('/home/agent', str(home))
     arguments = [str(engine) if value == '/opt/engine/agent' else mapped(value) for value in command]
     environment = dict(os.environ, **{key: mapped(value) for key, value in (environment or {}).items()})
-    return subprocess.run(arguments, cwd=workspace, env=environment).returncode
+    if not model_broker:
+        return subprocess.run(arguments, cwd=workspace, env=environment).returncode
+    # Run the real host broker and the real in-namespace bridge for this call.
+    import threading
+    import isolation_proxy as proxy
+    environment.pop('OPENAI_COMPATIBLE_API_KEY', None)  # host-held, as in the namespace
+    with tempfile.TemporaryDirectory() as temporary:
+        socket_path = os.path.join(temporary, 'model.sock')
+        broker = proxy.ModelBroker(socket_path, model_broker['endpoint'], model_broker.get('api_key', ''),
+                                   float(model_broker.get('timeout', 600)))
+        bridge = proxy.LocalBridge(('127.0.0.1', proxy.MODEL_BRIDGE_PORT), proxy.bridge(socket_path))
+        servers = (broker, bridge)
+        for server in servers:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            return subprocess.run(arguments, cwd=workspace, env=environment).returncode
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
 
 actual.CompanyView = FixtureView
 actual.run_isolated = fixture_execute

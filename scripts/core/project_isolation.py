@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 
-from isolation_proxy import PublicProxy
+from isolation_proxy import MODEL_SOCKET, ModelBroker, PublicProxy
 
 HERE = Path(__file__).resolve().parent
 # Public, operator-installed runtime files only. Never mount /, /home, /mnt,
@@ -166,7 +166,7 @@ def base_environment():
 
 
 def run_isolated(command, workspace, *, cwd="/workspace", home=None, readonly=(), environment=None,
-                 output=None, engine=None, interactive=False, launch_status=None):
+                 output=None, engine=None, interactive=False, launch_status=None, model_broker=None):
     bwrap = runtime_binary()
     workspace = Path(workspace).absolute()
     if any(part.is_symlink() for part in (workspace, *workspace.parents)):
@@ -204,6 +204,12 @@ def run_isolated(command, workspace, *, cwd="/workspace", home=None, readonly=()
         settings.write_text(json.dumps({"command": command, "cwd": cwd, "env": env,
                             "hostNetworkNamespace": os.readlink("/proc/self/ns/net")}), encoding="utf-8")
         socket_path = temporary / "egress.sock"
+        broker = None
+        if model_broker:
+            # Host-local model router (e.g. FreeLLMAPI): one fixed loopback
+            # upstream, one path, key injected on the host side only.
+            broker = ModelBroker(temporary / "model.sock", model_broker["endpoint"],
+                                 model_broker.get("api_key", ""), float(model_broker.get("timeout", 600)))
         args = [bwrap, "--unshare-all", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--die-with-parent",
                 "--new-session", "--cap-drop", "ALL", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
                 "--setenv", "LANG", "C.UTF-8", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
@@ -224,6 +230,8 @@ def run_isolated(command, workspace, *, cwd="/workspace", home=None, readonly=()
                  "--dir", "/run/autonomous-company", "--ro-bind", str(socket_path), "/run/autonomous-company/egress.sock",
                  "--bind", str(launch), "/run/autonomous-company/launch.json",
                  "--ro-bind", str(settings), "/run/autonomous-company/command.json"]
+        if broker:
+            args += ["--ro-bind", str(temporary / "model.sock"), MODEL_SOCKET]
         for name in ("isolation_entry.py", "isolation_proxy.py"):
             args += ["--ro-bind", str(HERE / name), "/run/autonomous-company/" + name]
         if engine:
@@ -241,6 +249,8 @@ def run_isolated(command, workspace, *, cwd="/workspace", home=None, readonly=()
         proxy = PublicProxy(socket_path)
         worker = threading.Thread(target=proxy.serve_forever, daemon=True)
         worker.start()
+        if broker:
+            threading.Thread(target=broker.serve_forever, daemon=True).start()
         process = None
         previous = {}
         try:
@@ -263,6 +273,9 @@ def run_isolated(command, workspace, *, cwd="/workspace", home=None, readonly=()
                 process.wait()
             proxy.shutdown()
             proxy.server_close()
+            if broker:
+                broker.shutdown()
+                broker.server_close()
             if launch_status:
                 try:
                     started = json.loads(launch.read_text()).get("started") is True
